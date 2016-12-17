@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+    <title>IBL</title>
+    <script type="text/javascript" src="../libs/three.min.js"></script>
+    <script type="text/javascript" src="../libs/stats.js"></script>
+    <script type="text/javascript" src="../libs/dat.gui.js"></script>
+    <style>
+        body {
+            /* set margin to 0 and overflow to hidden, to go fullscreen */
+            margin: 0;
+            overflow: hidden;
+        }
+    </style>
+    <script id="vs" type="vshader">
+    varying vec3 wNormal;
+    varying vec4 wPosition;
+
+    void main(void) {
+        wNormal = (modelMatrix * vec4(normal,0.0)).xyz;
+        wPosition = modelMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0);
+    }
+    </script>
+    <script id="fs" type="fshader">
+    varying vec3 wNormal;
+    varying vec4 wPosition;
+    uniform float Roughness;
+    uniform float Metallic;
+    uniform vec3 BaseColor;
+    uniform float MaxLodLevel;
+    uniform samplerCube CubeMap;
+
+    vec3 schlick(vec3 f0, float product)
+    {
+        return f0 + (1.0 - f0) * pow((1.0 - product), 5.0);
+    }
+
+    void main(void)
+    {
+        vec3 N = normalize(wNormal);
+        vec3 V = normalize((vec4(cameraPosition, 1.0) - wPosition).xyz);
+        vec3 R = reflect(-V,N);
+
+        // IBL
+        vec3 diffuse = textureCube(CubeMap, N, MaxLodLevel).xyz;
+        vec3 specular = textureCube(CubeMap, R, log2(Roughness*pow(2.0, MaxLodLevel))).xyz;
+
+        // フレネル
+        vec3 F0 = mix(vec3(0.1), BaseColor, Metallic);
+        vec3 fresnel = schlick(F0, max(0.0, dot(N,V)));
+
+        vec3 color = BaseColor * (1.0 - Metallic) * diffuse * (1.0 - fresnel) + specular * fresnel;
+        gl_FragColor = vec4(color,1.0);
+    }
+    </script>
+</head>
+<body>
+
+<div id="Stats-output">
+</div>
+<!-- Div which will hold the Output -->
+<div id="WebGL-output">
+</div>
+
+<!-- Javascript code that runs our Three.js examples -->
+<script type="text/javascript">
+    // ミップマップ数を計算
+    function maxLodLevel(width, height)
+    {
+        return Math.log2(Math.max(width,height));
+    }
+
+    // once everything is loaded, we run our Three.js stuff.
+    function init() {
+
+        var stats = initStats();
+
+        // create a scene, that will hold all our elements such as objects, cameras and lights.
+        var scene = new THREE.Scene();
+
+        // create a render and set the size
+        var renderer = new THREE.WebGLRenderer({antialias: true});
+
+        renderer.setClearColor(new THREE.Color(0xEEEEEE));
+        renderer.setSize(window.innerWidth, window.innerHeight);
+
+        // カスタムシェーダオブジェクトを作る
+        var customShader = new THREE.ShaderMaterial({
+            fragmentShader: document.getElementById('fs').innerHTML,
+            vertexShader  : document.getElementById('vs').innerHTML,
+            uniforms: {
+                Roughness: {
+                    type: 'fv1',
+                    value: 0.0,
+                },
+                Metallic: {
+                    type: 'fv1',
+                    value: 0.0,
+                },
+                BaseColor: {
+                    type: 'v3',
+                    value: null,
+                },
+                MaxLodLevel: {
+                    type: 'fv1',
+                    value: 0.0,
+                },
+                CubeMap: {
+                    type: 'tc',
+                    value: null,
+                },
+            },
+        });
+
+        // キューブマップ読み込み
+        var dirPath = '../images/pisa/';
+        var imgPaths = [
+            dirPath+'px.png',
+            dirPath+'nx.png',
+            dirPath+'py.png',
+            dirPath+'ny.png',
+            dirPath+'pz.png',
+            dirPath+'nz.png'
+        ];
+
+        var cubeLoader = new THREE.CubeTextureLoader();
+        var cubeMap = cubeLoader.load( imgPaths, function(loadedCubeMap){
+            loadedCubeMap.generateMipmaps = true;
+            loadedCubeMap.needsUpdate = true;
+            customShader.uniforms.MaxLodLevel.value = maxLodLevel(loadedCubeMap.image[0].width, loadedCubeMap.image[0].height);
+            customShader.uniforms.CubeMap.value = loadedCubeMap;
+        });
+
+        // キューブマップ表示曜
+        var cubeShader = THREE.ShaderLib[ 'cube' ];
+        cubeShader.uniforms[ 'tCube' ].value = cubeMap;
+        cubeShader.uniforms[ 'tFlip' ].value = 1;
+         
+        var skyBoxMaterial = new THREE.ShaderMaterial({
+            fragmentShader: cubeShader.fragmentShader,
+            vertexShader: cubeShader.vertexShader,
+            uniforms: cubeShader.uniforms,
+            depthWrite: false,
+            side: THREE.BackSide
+        });
+        var  skyMesh = new THREE.Mesh( new THREE.BoxGeometry( 400, 400, 400, 1, 1, 1 ), skyBoxMaterial);
+        scene.add( skyMesh );
+
+        // create a camera, which defines where we're looking at.
+        var camera = new THREE.PerspectiveCamera(25, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.x = 0;
+        camera.position.y = 10;
+        camera.position.z = 50;
+
+        // create a cube
+        var cubeGeometry = new THREE.BoxGeometry(4, 4, 4);
+        var cubeMaterial = customShader;
+        var cube = new THREE.Mesh(cubeGeometry, cubeMaterial);
+
+        // position the cube
+        cube.position.x = -4;
+        cube.position.y = 3;
+        cube.position.z = 0;
+
+        // add the cube to the scene
+        scene.add(cube);
+
+        var sphereGeometry = new THREE.SphereGeometry(4, 20, 20);
+        var sphereMaterial = customShader;
+        var sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+
+        // position the sphere
+        sphere.position.x = 20;
+        sphere.position.y = 0;
+        sphere.position.z = 2;
+
+        // add the sphere to the scene
+        scene.add(sphere);
+
+        // position and point the camera to the center of the scene
+        camera.lookAt(scene.position);
+
+        // add subtle ambient lighting
+        var ambientLight = new THREE.AmbientLight(0x0c0c0c);
+        scene.add(ambientLight);
+
+        // add the output of the renderer to the html element
+        document.getElementById("WebGL-output").appendChild(renderer.domElement);
+
+        // call the render function
+        var step = 0;
+
+        var controls = new function () {
+            this.roughness = 0.01;
+            this.metallic = 0.01;
+            this.baseColor = [255, 255, 255];
+        };
+
+        var gui = new dat.GUI();
+        gui.add(controls, 'roughness', 0, 1.0);
+        gui.add(controls, 'metallic', 0, 1.0);
+        gui.addColor(controls, 'baseColor');
+
+        render();
+
+        function render() {
+            stats.update();
+            // rotate the cube around its axes
+            cube.rotation.x += 0.01;
+            cube.rotation.y += 0.01;
+            cube.rotation.z += 0.01;
+
+            // bounce the sphere up and down
+            step += 0.01;
+            sphere.position.x = 20 + ( 10 * (Math.cos(step)));
+            sphere.position.y = 2 + ( 10 * Math.abs(Math.sin(step)));
+
+            camera.position.x = 75 * Math.cos(step);
+            camera.position.z = 75 * Math.sin(step);
+            camera.lookAt(sphere.position);
+
+            // render using requestAnimationFrame
+            requestAnimationFrame(render);
+
+            customShader.uniforms.Roughness.value = controls.roughness;
+            customShader.uniforms.Metallic.value = controls.metallic;
+            customShader.uniforms.BaseColor.value = new THREE.Color(controls.baseColor);
+
+            renderer.render(scene, camera);
+        }
+
+        function initStats() {
+
+            var stats = new Stats();
+
+            stats.setMode(0); // 0: fps, 1: ms
+
+            // Align top-left
+            stats.domElement.style.position = 'absolute';
+            stats.domElement.style.left = '0px';
+            stats.domElement.style.top = '0px';
+
+            document.getElementById("Stats-output").appendChild(stats.domElement);
+
+            return stats;
+        }
+    }
+    window.onload = init;
+
+</script>
+</body>
+</html>
